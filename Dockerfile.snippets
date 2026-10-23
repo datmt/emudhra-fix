@@ -12,8 +12,32 @@ RUN pip install --no-cache-dir --upgrade "certifi>=2026.10.19"
 # Node: use OS store
 ENV NODE_OPTIONS=--use-openssl-ca
 
-# Java: ignores the OS store; drop the root from the JDK truststore (alias name varies by JDK, find it with keytool -list)
-# RUN keytool -delete -cacerts -storepass changeit -alias emsigneccrootca-g3
+# Java: ignores the OS store; delete the roots from the JDK truststore (JDK 9+ for -cacerts; needs keytool, i.e. a JDK or full JRE image)
+RUN keytool -list -cacerts -storepass changeit 2>/dev/null \
+      | grep -iE 'trustedCertEntry' \
+      | grep -iE 'emsign|aaa_certificate_services' \
+      | sed -E 's/^(.*), [A-Za-z]{3} [0-9]+, [0-9]{4}, trustedCertEntry.*/\1/' \
+      | while IFS= read -r alias; do \
+          [ -n "$alias" ] || continue; \
+          echo "Removing untrusted certificate: ${alias}"; \
+          keytool -delete -cacerts -alias "${alias}" -storepass changeit || true; \
+        done
+
+# Java on distroless (no shell/keytool): step 1 clean a copy in a JDK stage, step 2 overwrite the runtime image's cacerts with it.
+# The OS bundle in distroless is not used by Java; it clears when you pull a newer base image (no apt there).
+# Use a builder JDK of the same major version as the runtime.
+# FROM eclipse-temurin:21-jdk AS truststore
+# RUN cp "$JAVA_HOME/lib/security/cacerts" /cacerts \
+#  && keytool -list -keystore /cacerts -storepass changeit 2>/dev/null \
+#       | grep -iE 'trustedCertEntry' \
+#       | grep -iE 'emsign|aaa_certificate_services' \
+#       | sed -E 's/^(.*), [A-Za-z]{3} [0-9]+, [0-9]{4}, trustedCertEntry.*/\1/' \
+#       | while IFS= read -r alias; do \
+#           [ -n "$alias" ] || continue; \
+#           keytool -delete -keystore /cacerts -alias "$alias" -storepass changeit || true; \
+#         done
+# FROM gcr.io/distroless/java21-debian12
+# COPY --from=truststore /cacerts /etc/ssl/certs/java/cacerts
 
 # Go: rebuild with latest toolchain; static binaries on scratch need fresh certs copied:
 # COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/

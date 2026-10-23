@@ -207,7 +207,7 @@ This also covers Java, so `java-truststore` isn't needed. The root stays listed 
 
 ## Dockerfile fixes
 
-See [`Dockerfile.snippets`](Dockerfile.snippets): `ca-certificates` upgrade for Debian/Ubuntu and Alpine, `certifi>=2026.10.19` for Python, `--use-openssl-ca` for Node, JDK truststore cleanup for Java, current toolchain for Go.
+See [`Dockerfile.snippets`](Dockerfile.snippets): `ca-certificates` upgrade for Debian/Ubuntu and Alpine, `certifi>=2026.10.19` for Python, `--use-openssl-ca` for Node, JDK truststore cleanup for Java (`keytool -delete` loop, matches aliases `emsign`/`aaa_certificate_services`; for distroless, clean a copy in a JDK build stage and `COPY` it over `/etc/ssl/certs/java/cacerts`), current toolchain for Go.
 
 ## Files
 
