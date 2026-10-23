@@ -12,5 +12,8 @@ RUN pip install --no-cache-dir --upgrade "certifi>=2026.10.19"
 # Node: use OS store
 ENV NODE_OPTIONS=--use-openssl-ca
 
+# Java: ignores the OS store; drop the root from the JDK truststore (alias name varies by JDK, find it with keytool -list)
+# RUN keytool -delete -cacerts -storepass changeit -alias emsigneccrootca-g3
+
 # Go: rebuild with latest toolchain; static binaries on scratch need fresh certs copied:
 # COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
