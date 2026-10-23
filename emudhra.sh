@@ -18,7 +18,8 @@ check)
   echo "host: $(probe)"
   ;;
 host)
-  if   command -v pacman >/dev/null; then sudo pacman -Syu --needed ca-certificates ca-certificates-mozilla
+  if   command -v pacman >/dev/null; then # CA data only: -Sy without -u skips the full upgrade (partial upgrade; review the dep list pacman shows)
+  sudo pacman -Sy ca-certificates ca-certificates-mozilla
   elif command -v apt-get >/dev/null; then sudo apt-get update && sudo apt-get install -y --only-upgrade ca-certificates && sudo update-ca-certificates
   elif command -v brew >/dev/null;    then brew upgrade ca-certificates
   else echo "unknown pkg manager"; exit 1; fi
