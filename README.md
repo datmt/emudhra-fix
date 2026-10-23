@@ -25,7 +25,8 @@ Or from a clone:
 ```bash
 ./emudhra.sh check                       # canary test on this host
 ./emudhra.sh host                        # upgrade ca-certificates (pacman/apt/brew), re-check
-./emudhra.sh docker-check                # check every container's trust stores (running or stopped); exit 2 if any vulnerable
+./emudhra.sh docker-check                # check every container's trust stores (running or stopped), with full evidence; exit 2 if any vulnerable
+./emudhra.sh docker-check -q             # summary table only (cron)
 ./emudhra.sh docker-fix ~/proj/a ~/proj/b/stack.yaml  # rebuild --pull --no-cache, pull, recreate compose projects (dirs or files), re-check
 ./emudhra.sh java-truststore <container> [out]  # write the container's JDK cacerts without the root, to bind-mount back
 ```
@@ -50,7 +51,23 @@ curl -I https://dv-g3b-emudhra.we-have-a-problem.com/
 
 The root the canary chains to, emSign ECC Root CA - G3 (SHA-256 `86:A1:EC:BA:…:6B:BE:6B`), is embedded in the script, so the root searches work without the canary. If the canary is unreachable the OS bundle is checked by fingerprint too. `verify` runs with `-no_check_time`, so the result doesn't flip to SAFE when the canary's leaf expires.
 
-Output per container: `SAFE`, `VULNERABLE` plus the stores that trust the root, or `NO-CA-STORE` (none found at known paths, e.g. distroless/scratch/Debian-slim without ca-certificates: TLS clients there either fail or bring their own store).
+For every container the report shows each store it looked at: the file path and symlink chain, whether the file comes from the **image layer** or a **HOST MOUNT** (so a SAFE that depends on the host being patched is visible), certificate/file counts, the exact test, the raw `openssl` result or match location, and the verdict. Stores not present list the paths that were tried. RHEL's OpenSSL trust bundle can list the root with TLS server auth rejected; that's reported as explicit distrust, not a match. The header shows the root being searched for, the canary chain as served, tool versions, and this host's CA package. Example:
+
+```
+━━ keycloak
+   image    : quay.io/keycloak/keycloak:26.6.0  (id 102b1fee6152, built 2026-04-08)
+   [os-bundle]    used by curl, wget, PHP, Ruby, Python ssl, OpenSSL CAfile
+      file    : /etc/ssl/cert.pem -> /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+      source  : HOST MOUNT /srv/keycloak/ca-trust/extracted/pem/tls-ca-bundle.pem (ro)
+      content : 145 certificates
+      test    : openssl verify -no_check_time -CAfile <this file> -untrusted <canary chain> <canary leaf>
+      openssl : error 20 at 2 depth lookup: unable to get local issuer certificate
+      => clean (chain does not reach a trusted root)
+   ...
+   RESULT   : SAFE, 4 store(s) checked, none trust the root
+```
+
+Verdict per container: `SAFE`, `VULNERABLE` plus the stores that trust the root, or `NO-CA-STORE` (none found at known paths, e.g. distroless/scratch/Debian-slim without ca-certificates: TLS clients there either fail or bring their own store).
 
 Limits: no Python `certifi` (path varies per install) and no Go binaries with embedded roots. If the upstream fix is a revocation/distrust of the intermediate rather than a root removal, a stale-looking bundle can't be told apart from a patched one by this test; treat the host `check` (real `curl`) as the reference.
 
