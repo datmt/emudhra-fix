@@ -1,6 +1,6 @@
 # emudhra-fix
 
-Check and fix hosts and Docker containers that still trust the leaked eMudhra intermediate CA keys.
+Check and fix hosts, Docker containers and Kubernetes pods that still trust the leaked eMudhra intermediate CA keys.
 
 > Based on the [oss-security disclosure](https://www.openwall.com/lists/oss-security/2026/10/20/1) and Debian's `ca-certificates 20250419+deb13u1` (blocklists emSign ECC Root CA - G3). The canary domain and other version numbers come from third-party reporting; confirm them against vendor or CA-store announcements before relying on them.
 
@@ -19,6 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/datmt/emudhra-fix/main/emudhra.sh |
 curl -fsSL https://raw.githubusercontent.com/datmt/emudhra-fix/main/emudhra.sh | bash -s -- docker-check
 curl -fsSL https://raw.githubusercontent.com/datmt/emudhra-fix/main/emudhra.sh | bash -s -- docker-check -q
 curl -fsSL https://raw.githubusercontent.com/datmt/emudhra-fix/main/emudhra.sh | bash -s -- host
+curl -fsSL https://raw.githubusercontent.com/datmt/emudhra-fix/main/emudhra.sh | bash -s -- k8s-check -q
 ```
 
 Or from a clone:
@@ -30,14 +31,17 @@ Or from a clone:
 ./emudhra.sh docker-check -q             # summary table only (cron)
 ./emudhra.sh docker-fix ~/proj/a ~/proj/b/stack.yaml  # rebuild --pull --no-cache, pull, recreate compose projects (dirs or files), re-check
 ./emudhra.sh java-truststore <container> [out]  # write the container's JDK cacerts without the root, to bind-mount back
+./emudhra.sh image-check [-q] <image...>  # same checks on images (pulled if not local, never run)
+./emudhra.sh k8s-check [-q]              # every running pod's image, plus pods whose spec overrides trust
 ```
 
-`check`, `docker-check` and `java-truststore` change nothing. `host` upgrades the CA package; `docker-fix` rebuilds, pulls and recreates the compose projects you name.
+`check`, `docker-check`, `image-check`, `k8s-check` and `java-truststore` change nothing on the host or cluster (`image-check`/`k8s-check` pull images and remove them again). `host` upgrades the CA package; `docker-fix` rebuilds, pulls and recreates the compose projects you name.
 
 ### Requirements
 
 - bash (3.2+, so macOS works), `openssl` 1.1+, `tar`, `od`, `grep`; `curl` for `check`.
 - Docker CLI with access to the daemon (`docker` group or root) for the `docker-*` commands.
+- `kubectl` with read access to pods in all namespaces for `k8s-check` (`KUBECTL="k3s kubectl"` to use another command), plus Docker to pull and check the images.
 - `keytool` for `java-truststore`: from the host if installed, otherwise from the container's own image.
 
 `docker-check` works on any Docker host, patched or not: the root is embedded in the script and the canary chain is fetched without verifying it, so the host's own CA store plays no part in the result. Only the [mount mitigation](#mitigate-without-new-images) depends on the host.
@@ -54,7 +58,7 @@ The upgrade only helps once your distro has shipped the distrust; `check` tells 
 
 ### Exit codes
 
-`docker-check`: `0` nothing vulnerable, `2` at least one container trusts the root, `1` error. `docker-fix` returns `docker-check`'s code after recreating.
+`docker-check`: `0` nothing vulnerable, `2` at least one container trusts the root, `1` error. `docker-fix` returns `docker-check`'s code after recreating. `image-check` and `k8s-check`: `0`, `2` likewise, `1` if any image couldn't be pulled or checked.
 
 ### Canary
 
@@ -97,6 +101,49 @@ On a terminal the report is coloured: red for anything that trusts the root, gre
 Verdict per container: `SAFE`, `VULNERABLE` plus the stores that trust the root, or `NO-CA-STORE` (none found at known paths, e.g. distroless/scratch/Debian-slim without ca-certificates: TLS clients there either fail or bring their own store).
 
 Limits: no Python `certifi` (path varies per install) and no Go binaries with embedded roots. If the upstream fix is a revocation/distrust of the intermediate rather than a root removal, a stale-looking bundle can't be told apart from a patched one by this test; treat the host `check` (real `curl`) as the reference.
+
+## Kubernetes
+
+`docker-check` can't see pods on containerd (k3s, most managed clusters). `k8s-check` checks their images instead: unless a pod's spec changes its trust store, a pod trusts exactly what its image ships.
+
+- Lists every container in `kubectl get pods -A` and checks each distinct image once, pulled by the digest the node is running (from the pod status), so a moved tag doesn't change the answer.
+- The image goes through `docker create` (never started) and the same store checks as `docker-check`. Images it pulled are removed afterwards; `KEEP_IMAGES=1` keeps them.
+- Marks `OVERRIDE` on containers that mount over a CA path (`ssl`, `pki`, `cert`, `ca-trust`, `truststore`) or set `SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `USE_SYSTEM_CA_CERTS`, a CA flag in `NODE_OPTIONS`, or a `trustStore` in `JAVA_OPTS`/`JAVA_TOOL_OPTIONS`/`JDK_JAVA_OPTIONS`. For those the image result alone isn't the answer; check what's mounted. Env values aren't printed.
+- Private registries: `docker login` first, or map the registry to a mirror or port-forward:
+
+```bash
+kubectl -n <ns> port-forward svc/<registry> 15000:5000 &
+docker login localhost:15000
+REWRITE="cr.example.com=localhost:15000" ./emudhra.sh k8s-check
+```
+
+`image-check <image...>` is the same check for any image list, e.g. before deploying.
+
+Not covered: CA paths set through `envFrom` or container args, and pods without a status yet.
+
+### Fixing pods
+
+Rebuild images you own ([`Dockerfile.snippets`](Dockerfile.snippets)); for Java also clean the JDK `cacerts`. For third-party images, mount a clean bundle from a ConfigMap, created from a patched host (`./emudhra.sh check` says SAFE):
+
+```bash
+kubectl -n <ns> create configmap ca-bundle --from-file=ca-certificates.crt=/etc/ssl/certs/ca-certificates.crt
+```
+
+```yaml
+      volumes:
+        - name: ca-bundle
+          configMap: {name: ca-bundle}
+      containers:
+        - name: app
+          env:
+            - {name: SSL_CERT_FILE, value: /etc/ssl/certs/ca-certificates.crt}   # Go, OpenSSL, Python ssl
+          volumeMounts:
+            - {name: ca-bundle, mountPath: /etc/ssl/certs, readOnly: true}
+```
+
+The directory mount holds only the clean bundle, so Go can't pick up stale per-cert files. As with the Docker mount it hides the image's own `/etc/ssl/certs` (private CAs, Debian Java's `java/cacerts`), and it's a snapshot: recreate it after host CA updates, or sync it with [trust-manager](https://cert-manager.io/docs/trust/trust-manager/). Node also needs `NODE_OPTIONS=--use-openssl-ca`; Java needs a cleaned `cacerts` (`java-truststore` on a Docker host) mounted over the JDK's. Only pods that make outbound TLS need this; cluster-internal TLS with the cluster CA is unaffected.
+
+`k8s-check` reads the image, not the mounted ConfigMap, so after this it still shows the image result with `OVERRIDE`. Confirm with a real request from the pod: `kubectl exec <pod> -- curl -sSI https://dv-g3b-emudhra.we-have-a-problem.com/` should fail with a certificate error.
 
 ## Can Docker be automated?
 
@@ -164,5 +211,5 @@ See [`Dockerfile.snippets`](Dockerfile.snippets): `ca-certificates` upgrade for 
 
 ## Files
 
-- `emudhra.sh` — check/fix script
+- `emudhra.sh` — check/fix script (host, Docker, images, Kubernetes)
 - `Dockerfile.snippets` — per-base-image fixes

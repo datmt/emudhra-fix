@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# eMudhra CA leak: check + fix host and docker.
+# eMudhra CA leak: check + fix host, docker and kubernetes.
 # usage: ./emudhra.sh check|host|docker-check [-q]|docker-fix <compose-dir|file...>|java-truststore <container> [out]
+#                     |image-check [-q] <image...>|k8s-check [-q]
 # docker-check: OS bundle + cert dir, JDK cacerts, node built-in store. Not certifi or Go's embedded roots.
+# image-check / k8s-check: same checks on images (a pod's image is its trust store unless the pod overrides it).
 # Output shows every file checked, where it comes from (image or host mount), the test and its raw result.
 set -uo pipefail
 CANARY=https://dv-g3b-emudhra.we-have-a-problem.com/
@@ -228,6 +230,78 @@ scan() {
   else say "   RESULT   : ${GRN}SAFE${OFF}, $NSTORES store(s) checked, none trust the root"; fi
 }
 
+# verdict of the last scan into R
+verdict() { case $HITS in "") [ $NSTORES = 0 ] && R=NO-CA-STORE || R=SAFE ;; *) R=VULNERABLE ;; esac; }
+
+# REWRITE="cr.example.com=localhost:15000 ..." pulls those registries' images from a mirror
+# or port-forward instead (same repo path and digest)
+rewrite() {
+  local r=$1 m
+  for m in ${REWRITE:-}; do case $r in "${m%%=*}"/*) r=${m#*=}/${r#"${m%%=*}"/} ;; esac; done
+  printf '%s' "$r"
+}
+
+# scan image $2 through a container that is created but never started, pulling the image first
+# if it isn't local (pulled ones are removed on exit unless KEEP_IMAGES=1); $1 labels the report.
+# Sets R (verdict) and HITS (stores, or the error for PULL-FAILED/CREATE-FAILED)
+scan_image() {
+  local id e
+  R=""; HITS=""
+  if ! docker image inspect "$2" >/dev/null 2>&1; then
+    if e=$(docker pull -q "$2" 2>&1); then echo "$2" >> "$tmp/pulled"
+    else
+      R=PULL-FAILED; HITS=$(tail -1 <<<"$e" | cut -c1-100)
+      say ""; say "${BLD}━━ $1${OFF}"; say "   pull     : $2"; say "   RESULT   : ${YEL}PULL-FAILED${OFF}, $HITS"
+      return
+    fi
+  fi
+  # create refuses an image without a command; the entrypoint is never run
+  if ! id=$(docker create --entrypoint /emudhra-noop "$2" 2>&1); then
+    R=CREATE-FAILED; HITS=$(tail -1 <<<"$id" | cut -c1-100); say "   RESULT   : ${YEL}CREATE-FAILED${OFF}, $HITS"; return
+  fi
+  scan "$id" "$1" "$2" "created from the image, never started"
+  docker rm "$id" >/dev/null
+  verdict
+}
+
+# shared setup for the *-check commands: temp dir, embedded root, canary chain
+prep() {
+  tmp=$(mktemp -d)
+  trap '[ -z "${KEEP_IMAGES:-}" ] && [ -s "$tmp/pulled" ] && xargs docker rmi <"$tmp/pulled" >/dev/null 2>&1; wipe "$tmp"' EXIT
+  printf '%s\n' "$ROOT_PEM" > "$tmp/root.pem"
+  [ "$(openssl x509 -in "$tmp/root.pem" -noout -fingerprint -sha256)" = "sha256 Fingerprint=$ROOT_FP" ] \
+    || { echo "embedded root corrupted"; exit 1; }
+  openssl x509 -in "$tmp/root.pem" -outform der -out "$tmp/root.der"
+  roothex=$(hex "$tmp/root.der")
+  h=${CANARY#https://}; h=${h%/}
+  openssl s_client -connect "$h:443" -servername "$h" -showcerts </dev/null 2>/dev/null \
+    | awk -v d="$tmp" '/BEGIN CERT/{n++; w=1} w{print > d "/c" n ".pem"} /END CERT/{w=0}'
+  cat "$tmp"/c*.pem > "$tmp/chain.pem" 2>/dev/null || rm -f "$tmp/chain.pem"
+}
+
+banner() {
+  say "eMudhra CA check, $(date -u '+%Y-%m-%d %H:%M UTC') on $(hostname)"
+  say "looking for : emSign ECC Root CA - G3 (eMudhra Technologies), sha256 $ROOT_FP"
+  say "              (embedded in this script, fingerprint verified at start)"
+  if [ -s "$tmp/chain.pem" ]; then
+    say "canary      : $h:443, served $(ls "$tmp"/c[0-9]*.pem | wc -l | tr -d ' ') certs:"
+    for f in "$tmp"/c[0-9]*.pem; do say "                $(cn "$f" subject)   <- issued by $(cn "$f" issuer)"; done
+  else
+    say "canary      : $h:443 UNREACHABLE; OS bundles are checked by searching for the root instead"
+  fi
+}
+
+# what a pod's container spec changes about trust; one "ns|pod|container|mount <path>" or
+# "...|env <NAME>" line per item. Values are dropped (JAVA_OPTS can carry passwords)
+k8s_overrides() {
+  local c='{{$c:=.name}}{{range .volumeMounts}}{{$ns}}|{{$p}}|{{$c}}|mount {{.mountPath}}{{"\n"}}{{end}}{{range .env}}{{$ns}}|{{$p}}|{{$c}}|env {{.name}}={{.value}}{{"\n"}}{{end}}'
+  $KC get pods -A -o go-template="{{range .items}}{{\$ns:=.metadata.namespace}}{{\$p:=.metadata.name}}{{range .spec.initContainers}}$c{{end}}{{range .spec.containers}}$c{{end}}{{end}}" \
+  | awk -F'|' 'tolower($4) ~ /^mount .*(ssl|pki|cert|ca-trust|truststore)/ ||
+      $4 ~ /^env (SSL_CERT_FILE|SSL_CERT_DIR|NODE_EXTRA_CA_CERTS|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|USE_SYSTEM_CA_CERTS)=/ ||
+      $4 ~ /^env NODE_OPTIONS=.*--use-(openssl|bundled|system)-ca/ ||
+      $4 ~ /^env (JAVA_TOOL_OPTIONS|JAVA_OPTS|JDK_JAVA_OPTIONS)=.*trustStore/ { sub(/=.*/, "", $4); print $1 "|" $2 "|" $3 "|" $4 }'
+}
+
 main() { case "${1:-}" in
 check)
   r=$(probe; printf '\n%s' "$OUT")
@@ -253,26 +327,8 @@ host)
 docker-check)
   # no exec needed: copy each container's trust stores out and check them on the host
   [ "${2:-}" = -q ] && QUIET=1
-  tmp=$(mktemp -d); trap 'wipe "$tmp"' EXIT
-  printf '%s\n' "$ROOT_PEM" > "$tmp/root.pem"
-  [ "$(openssl x509 -in "$tmp/root.pem" -noout -fingerprint -sha256)" = "sha256 Fingerprint=$ROOT_FP" ] \
-    || { echo "embedded root corrupted"; exit 1; }
-  openssl x509 -in "$tmp/root.pem" -outform der -out "$tmp/root.der"
-  roothex=$(hex "$tmp/root.der")
-  h=${CANARY#https://}; h=${h%/}
-  openssl s_client -connect "$h:443" -servername "$h" -showcerts </dev/null 2>/dev/null \
-    | awk -v d="$tmp" '/BEGIN CERT/{n++; w=1} w{print > d "/c" n ".pem"} /END CERT/{w=0}'
-  cat "$tmp"/c*.pem > "$tmp/chain.pem" 2>/dev/null || rm -f "$tmp/chain.pem"
-
-  say "eMudhra CA check, $(date -u '+%Y-%m-%d %H:%M UTC') on $(hostname)"
-  say "looking for : emSign ECC Root CA - G3 (eMudhra Technologies), sha256 $ROOT_FP"
-  say "              (embedded in this script, fingerprint verified at start)"
-  if [ -s "$tmp/chain.pem" ]; then
-    say "canary      : $h:443, served $(ls "$tmp"/c[0-9]*.pem | wc -l | tr -d ' ') certs:"
-    for f in "$tmp"/c[0-9]*.pem; do say "                $(cn "$f" subject)   <- issued by $(cn "$f" issuer)"; done
-  else
-    say "canary      : $h:443 UNREACHABLE; OS bundles are checked by searching for the root instead"
-  fi
+  prep
+  banner
   say "method      : each container's trust stores are copied out with 'docker cp' (no exec, works on"
   say "              stopped containers) and checked here. Nothing is changed. A store marked"
   say "              HOST MOUNT is this host's file, so its result depends on this host being patched."
@@ -287,10 +343,10 @@ docker-check)
   docker ps -a --format '{{.ID}} {{.Names}} {{.Image}} {{.State}}' > "$tmp/ps" || { echo "cannot list containers (docker daemon reachable? permission?)"; exit 1; }
   while read -r -u 3 id name img state; do
     scan "$id" "$name" "$img" "$state"
-    case $HITS in "") [ $NSTORES = 0 ] && r=NO-CA-STORE || r=SAFE ;; *) r=VULNERABLE ;; esac
-    [ $r = VULNERABLE ] && VULN=1
+    verdict
+    [ $R = VULNERABLE ] && VULN=1
     # pad before colouring so escape codes don't break the columns
-    printf '%-30s %-40s %-10s %s %s\n' "$name" "$img" "$state" "$(paint "$r" "$(printf '%-11s' "$r")")" "${HITS:+$RED$HITS$OFF}" >> "$tmp/out"
+    printf '%-30s %-40s %-10s %s %s\n' "$name" "$img" "$state" "$(paint "$R" "$(printf '%-11s' "$R")")" "${HITS:+$RED$HITS$OFF}" >> "$tmp/out"
   done 3< "$tmp/ps"
 
   say ""
@@ -309,6 +365,70 @@ docker-check)
     exit 2
   fi
   echo "${GRN}No container trusts the compromised root.${OFF}"
+  ;;
+image-check)
+  # an image is checked through a created, never-started container: nothing in it runs
+  shift; [ "${1:-}" = -q ] && { QUIET=1; shift; }
+  [ $# -gt 0 ] || { echo "give image references"; exit 1; }
+  prep
+  banner
+  say "method      : each image is pulled if not local, a container is created from it but never"
+  say "              started, and its trust stores are checked as in docker-check. Images pulled"
+  say "              here are removed afterwards (KEEP_IMAGES=1 keeps them).${REWRITE:+ REWRITE: $REWRITE}"
+  for i in "$@"; do
+    scan_image "$i" "$(rewrite "$i")"
+    case $R in VULNERABLE) VULN=1 ;; *-FAILED) FAIL=1 ;; esac
+    printf '%-60s %s %s\n' "$i" "$(paint "$R" "$(printf '%-13s' "$R")")" "${HITS:+$([ $R = VULNERABLE ] && echo "$RED$HITS$OFF" || echo "$HITS")}" >> "$tmp/out"
+  done
+  say ""
+  say "${BLD}━━ summary${OFF}"
+  printf '%s%-60s %-13s %s%s\n' "$BLD" IMAGE RESULT "TRUSTED BY" "$OFF"
+  cat "$tmp/out"
+  [ "${VULN:-0}" = 1 ] && { echo; echo "${RED}Images above trust the compromised root.${OFF} Rebuild them (Dockerfile.snippets) or mount a clean store."; exit 2; }
+  [ "${FAIL:-0}" = 1 ] && { echo; echo "${YEL}Some images could not be checked.${OFF} Private registry: docker login, or REWRITE=<registry>=<mirror>."; exit 1; }
+  echo "${GRN}No image trusts the compromised root.${OFF}"
+  ;;
+k8s-check)
+  # a pod trusts what its image ships unless its spec mounts over a CA path or points a CA env
+  # var elsewhere. So: check each running image (by the digest the node pulled), flag overrides
+  [ "${2:-}" = -q ] && QUIET=1
+  KC=${KUBECTL:-kubectl}
+  prep
+  $KC get pods -A -o go-template='{{range .items}}{{$ns:=.metadata.namespace}}{{$p:=.metadata.name}}{{range .status.initContainerStatuses}}{{$ns}} {{$p}} {{.name}} {{.image}} {{.imageID}}{{"\n"}}{{end}}{{range .status.containerStatuses}}{{$ns}} {{$p}} {{.name}} {{.image}} {{.imageID}}{{"\n"}}{{end}}{{end}}' \
+    > "$tmp/pods" || { echo "cannot list pods (kubectl configured? KUBECTL=\"k3s kubectl\" on a k3s node)"; exit 1; }
+  k8s_overrides > "$tmp/ovr" || { echo "cannot read pod specs"; exit 1; }
+  banner
+  say "cluster     : context $($KC config current-context 2>/dev/null), server $($KC version 2>/dev/null | sed -n 's/^Server Version: //p')"
+  say "              $(wc -l <"$tmp/pods" | tr -d ' ') containers in $(cut -d' ' -f1-2 "$tmp/pods" | sort -u | wc -l | tr -d ' ') pods (pending pods without status are skipped)"
+  say "method      : each distinct image is checked as in image-check, pulled by the digest the node"
+  say "              runs. Pods that mount over a CA path or set a CA env var are marked OVERRIDE: the"
+  say "              image result alone doesn't cover them, check those by hand.${REWRITE:+ REWRITE: $REWRITE}"
+  : > "$tmp/res"
+  while read -r -u 3 ns pod c img iid; do
+    # imageID is repo@sha256:... when pulled from a registry; bare sha256:... for side-loaded images
+    case $iid in *@sha256:*) ref=${iid#docker-pullable://} ;; *) ref=$img ;; esac
+    ref=$(rewrite "$ref")
+    if ! r=$(grep -F "$ref|" "$tmp/res" | head -1) || [ -z "$r" ]; then
+      scan_image "$img" "$ref"
+      printf '%s|%s|%s\n' "$ref" "$R" "$HITS" >> "$tmp/res"
+    else R=$(cut -d'|' -f2 <<<"$r"); HITS=$(cut -d'|' -f3- <<<"$r"); fi
+    case $R in VULNERABLE) VULN=1 ;; *-FAILED) FAIL=1 ;; esac
+    o=$(awk -F'|' -v k="$ns|$pod|$c" '$1 "|" $2 "|" $3 == k {print $4}' "$tmp/ovr" | paste -sd, -)
+    [ -n "$o" ] && OVR=1
+    printf '%-50s %-22s %-40s %s %s%s\n' "$ns/$pod" "$c" "${img:0:40}" "$(paint "$R" "$(printf '%-13s' "$R")")" \
+      "${HITS:+$([ $R = VULNERABLE ] && echo "$RED$HITS$OFF" || echo "$HITS")}" "${o:+ ${YEL}OVERRIDE: $o$OFF}" >> "$tmp/out"
+  done 3< "$tmp/pods"
+  say ""
+  say "${BLD}━━ summary${OFF}"
+  printf '%s%-50s %-22s %-40s %-13s %s%s\n' "$BLD" NAMESPACE/POD CONTAINER IMAGE RESULT "TRUSTED BY" "$OFF"
+  cat "$tmp/out" 2>/dev/null
+  say ""
+  say "not checked : as docker-check, plus CA paths set through envFrom or args, and sidecars"
+  say "              injected after admission (shown if running). Only matters for pods making outbound TLS."
+  [ "${OVR:-0}" = 1 ] && { echo; echo "${YEL}OVERRIDE pods use a store from their spec, not only the image:${OFF} check what is mounted there."; }
+  [ "${VULN:-0}" = 1 ] && { echo; echo "${RED}Pods above trust the compromised root.${OFF} Rebuild own images (Dockerfile.snippets); for third-party ones mount a clean bundle (README: Kubernetes)."; exit 2; }
+  [ "${FAIL:-0}" = 1 ] && { echo; echo "${YEL}Some images could not be checked.${OFF} Private registry: docker login, or REWRITE=<registry>=<mirror>."; exit 1; }
+  echo "${GRN}No pod image trusts the compromised root.${OFF}"
   ;;
 docker-fix)
   # containers are immutable: rebuild/pull + recreate. Pass compose dirs or compose files.
@@ -356,7 +476,7 @@ java-truststore)
   echo "Add to the service's volumes, then recreate:"
   echo "      - $od/$of:$src:ro"
   ;;
-*) echo "usage: emudhra.sh check|host|docker-check [-q]|docker-fix <compose-dir|file...>|java-truststore <container> [out]"; exit 1 ;;
+*) echo "usage: emudhra.sh check|host|docker-check [-q]|docker-fix <compose-dir|file...>|java-truststore <container> [out]|image-check [-q] <image...>|k8s-check [-q]"; exit 1 ;;
 esac
 }
 main "$@"
