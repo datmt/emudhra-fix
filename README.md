@@ -4,6 +4,12 @@ Check and fix hosts, Docker containers and Kubernetes pods that still trust the 
 
 > Based on the [oss-security disclosure](https://www.openwall.com/lists/oss-security/2026/10/20/1) and Debian's `ca-certificates 20250419+deb13u1` (blocklists emSign ECC Root CA - G3). The canary domain and other version numbers come from third-party reporting; confirm them against vendor or CA-store announcements before relying on them.
 
+![docker-check flags running containers that still trust the root](docs/docker-check.png)
+
+After the fix, Java rejects a certificate chained to the root (canary domain):
+
+![JShell: PKIX path building failed after cleaning the truststore](docs/java-rejected.png)
+
 ## Background
 
 Some eMudhra intermediate CA private keys were reported leaked, some trivially weak. With them an attacker can forge TLS certificates for any domain and run a man-in-the-middle attack. Browsers ship updated blocklists, but servers and containers do not protect themselves: default TLS clients (curl, Python `requests`, Node, Go) don't check OCSP/CRL and don't enforce Certificate Transparency. Their only defense is an updated CA bundle.
