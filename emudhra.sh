@@ -39,12 +39,22 @@ JDK_CACERTS="/etc/pki/ca-trust/extracted/java/cacerts /etc/ssl/certs/java/cacert
 NODE_BINS="/usr/local/bin/node /usr/bin/node"
 
 QUIET=0
+# colour only on a terminal (curl | bash still is one); NO_COLOR=1 turns it off
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != dumb ]; then
+  RED=$'\033[1;31m' GRN=$'\033[1;32m' YEL=$'\033[1;33m' BLD=$'\033[1m' DIM=$'\033[2m' OFF=$'\033[0m'
+else RED="" GRN="" YEL="" BLD="" DIM="" OFF=""; fi
 say() { [ "$QUIET" = 1 ] || printf '%s\n' "$*"; }
 run() { echo "+ $*"; "$@"; }
 
 wipe() { chmod -R u+w "$1" 2>/dev/null; rm -rf "$1"; }
 
 hex() { od -An -v -tx1 "$1" | tr -d ' \n'; }
+
+# colour a verdict word; $2 is the text to print (default: the verdict itself)
+paint() {
+  case $1 in VULNERABLE*) printf '%s' "$RED${2:-$1}$OFF" ;; SAFE*) printf '%s' "$GRN${2:-$1}$OFF" ;;
+    *) printf '%s' "$YEL${2:-$1}$OFF" ;; esac
+}
 
 # subject/issuer CN of a PEM file
 cn() { openssl x509 -in "$1" -noout -"$2" 2>/dev/null | sed -n 's/.*CN *= *\([^,/]*\).*/\1/p'; }
@@ -93,7 +103,7 @@ src_of() {
       bl=${#dst}; best="HOST MOUNT $src${p#"$dst"} ($([ "$rw" = true ] && echo rw || echo ro))" ;;
     esac
   done <<<"$MOUNTS"
-  echo "${best:-image layer}"
+  [ -n "$best" ] && echo "${YEL}$best${OFF}" || echo "image layer"
 }
 
 # prints SAFE if TLS fails (cert rejected), VULNERABLE if request succeeds; raw curl output in OUT
@@ -112,7 +122,7 @@ scan() {
   MOUNTS=$(docker inspect -f '{{range .Mounts}}{{.Destination}}|{{.Source}}|{{.RW}}{{"\n"}}{{end}}' "$id")
   t=$(docker inspect -f '{{.Image}}' "$id")
   say ""
-  say "━━ $name"
+  say "${BLD}━━ $name${OFF}"
   t=${t#sha256:}
   say "   image    : $img  (id ${t:0:12}, built $(docker image inspect -f '{{.Created}}' "$t" 2>/dev/null | cut -c1-10))"
   say "   state    : $state"
@@ -131,15 +141,15 @@ scan() {
       out=$(openssl verify -no_check_time -show_chain -CAfile "$w/b.crt" -untrusted "$tmp/chain.pem" "$tmp/c1.pem" 2>&1); rc=$?
       if [ $rc = 0 ]; then
         say "      openssl : OK, chain ends at trusted '$(grep '^depth=' <<<"$out" | tail -1 | sed -n 's/.*CN *= *\([^,]*\).*/\1/p')'"
-        say "      => TRUSTS ROOT"; HITS+=" os-bundle"
+        say "      ${RED}=> TRUSTS ROOT${OFF}"; HITS+=" os-bundle"
       else
         say "      openssl : $(grep -m1 '^error [0-9]' <<<"$out")"
-        if grep -qE 'unable to get (local )?issuer certificate' <<<"$out"; then say "      => clean (chain does not reach a trusted root)"
-        else say "      => UNEXPECTED verify error, counted as vulnerable"; HITS+=" os-bundle(verify-error)"; fi
+        if grep -qE 'unable to get (local )?issuer certificate' <<<"$out"; then say "      ${GRN}=> clean (chain does not reach a trusted root)${OFF}"
+        else say "      ${RED}=> UNEXPECTED verify error, counted as vulnerable${OFF}"; HITS+=" os-bundle(verify-error)"; fi
       fi
     else
       say "      test    : search for the root's public key (canary unreachable, chain test skipped)"
-      if grep -qF "$ROOT_KEY_B64" "$w/b.crt"; then say "      => TRUSTS ROOT"; HITS+=" os-bundle"; else say "      => clean"; fi
+      if grep -qF "$ROOT_KEY_B64" "$w/b.crt"; then say "      ${RED}=> TRUSTS ROOT${OFF}"; HITS+=" os-bundle"; else say "      ${GRN}=> clean${OFF}"; fi
     fi
   else say "      not present (looked for $OS_BUNDLES)"; fi
 
@@ -168,11 +178,11 @@ scan() {
       [ -n "$f" ] || continue
       t=$(readlink -f "$f" | sed "s|^$w/r||")
       n="${f#"$w/r$d/"}$([ "$t" != "$d/${f#"$w/r$d/"}" ] && echo " -> $t") [$(src_of "$t")]"
-      if trusts_root "$f"; then say "      match   : $n"; k=1
-      else say "      listed  : $n, but with TLS server auth REJECTED (explicit distrust)"; fi
+      if trusts_root "$f"; then say "      ${RED}match${OFF}   : $n"; k=1
+      else say "      ${GRN}listed${OFF}  : $n, but with TLS server auth REJECTED (explicit distrust)"; fi
     done <<<"$(grep -RlsF --exclude='ca-certificates.crt' --exclude-dir=java "$ROOT_KEY_B64" "$w/r$d/")"
-    if [ $k = 1 ]; then say "      => TRUSTS ROOT"; HITS+=" os-certdir"; break
-    else say "      => clean (no file trusts the root)"; fi
+    if [ $k = 1 ]; then say "      ${RED}=> TRUSTS ROOT${OFF}"; HITS+=" os-certdir"; break
+    else say "      ${GRN}=> clean (no file trusts the root)${OFF}"; fi
   done
   [ $m = 1 ] || say "      not present (looked for $CERT_DIRS)"
 
@@ -188,8 +198,8 @@ scan() {
     say "      test    : search for the root certificate's DER bytes"
     if [[ $h == *"$roothex"* ]]; then
       t=${h%%"$roothex"*}
-      say "      match   : at byte offset $(( ${#t} / 2 ))"; say "      => TRUSTS ROOT"; HITS+=" jdk-cacerts"; break
-    else say "      => clean"; fi
+      say "      ${RED}match${OFF}   : at byte offset $(( ${#t} / 2 ))"; say "      ${RED}=> TRUSTS ROOT${OFF}"; HITS+=" jdk-cacerts"; break
+    else say "      ${GRN}=> clean${OFF}"; fi
   done
   [ $m = 1 ] || say "      not present (looked for $JDK_CACERTS${k:+ \$JAVA_HOME/lib/security/cacerts})"
 
@@ -201,21 +211,21 @@ scan() {
     say "      binary  : $VIA  ($(( $(wc -c <"$w/node") / 1048576 )) MB)"
     say "      env     : NODE_OPTIONS=${k:-<unset>}"
     if [[ $k == *--use-openssl-ca* ]]; then
-      say "      => not used: --use-openssl-ca makes node load the OS store (checked above)"
+      say "      ${GRN}=> not used: --use-openssl-ca makes node load the OS store (checked above)${OFF}"
     else
       say "      test    : search the binary for the root's public key"
       t=$(grep -aobF "$ROOT_KEY_B64" "$w/node" | head -1 | cut -d: -f1)
-      if [ -n "$t" ]; then say "      match   : at byte offset $t"; say "      => TRUSTS ROOT"; HITS+=" node-builtin"
-      else say "      => clean"; fi
+      if [ -n "$t" ]; then say "      ${RED}match${OFF}   : at byte offset $t"; say "      ${RED}=> TRUSTS ROOT${OFF}"; HITS+=" node-builtin"
+      else say "      ${GRN}=> clean${OFF}"; fi
     fi
     break
   done
   [ $m = 1 ] || say "      not present (looked for $NODE_BINS)"
   wipe "$w"
   HITS=${HITS# }
-  if [ -n "$HITS" ]; then say "   RESULT   : VULNERABLE, trusted by: $HITS"
-  elif [ $NSTORES = 0 ]; then say "   RESULT   : NO-CA-STORE, no trust store at any known path; TLS clients here fail or bring their own (not checked)"
-  else say "   RESULT   : SAFE, $NSTORES store(s) checked, none trust the root"; fi
+  if [ -n "$HITS" ]; then say "   RESULT   : ${RED}VULNERABLE${OFF}, trusted by: ${RED}$HITS${OFF}"
+  elif [ $NSTORES = 0 ]; then say "   RESULT   : ${YEL}NO-CA-STORE${OFF}, no trust store at any known path; TLS clients here fail or bring their own (not checked)"
+  else say "   RESULT   : ${GRN}SAFE${OFF}, $NSTORES store(s) checked, none trust the root"; fi
 }
 
 main() { case "${1:-}" in
@@ -228,7 +238,7 @@ check)
   echo "CA used  : $(grep -E '^\* +CA(file|path):' <<<"$OUT" | sed 's/^\* *//' | tr '\n' ' ')"
   echo "request  : curl -I $CANARY"
   echo "response : $(grep -m1 -E 'SSL certificate problem|^curl: |^< HTTP/' <<<"$OUT" | sed 's/^[<*] //')"
-  echo "result   : $r"
+  echo "result   : $(paint "$r")"
   ;;
 host)
   echo "before   : $(pkgver)"
@@ -270,31 +280,35 @@ docker-check)
   say "this host   : $(pkgver)"
   for p in $OS_BUNDLES; do
     [ -f "$p" ] || continue
-    if grep -qF "$ROOT_KEY_B64" "$p"; then say "              $p TRUSTS the root"; else say "              $p does not trust the root"; fi
+    if grep -qF "$ROOT_KEY_B64" "$p"; then say "              $p ${RED}TRUSTS the root${OFF}"; else say "              $p ${GRN}does not trust the root${OFF}"; fi
     break
   done
 
-  docker ps -a --format '{{.ID}} {{.Names}} {{.Image}} {{.State}}' > "$tmp/ps"
+  docker ps -a --format '{{.ID}} {{.Names}} {{.Image}} {{.State}}' > "$tmp/ps" || { echo "cannot list containers (docker daemon reachable? permission?)"; exit 1; }
   while read -r -u 3 id name img state; do
     scan "$id" "$name" "$img" "$state"
     case $HITS in "") [ $NSTORES = 0 ] && r=NO-CA-STORE || r=SAFE ;; *) r=VULNERABLE ;; esac
-    printf '%-30s %-40s %-10s %-11s %s\n' "$name" "$img" "$state" "$r" "$HITS" >> "$tmp/out"
+    [ $r = VULNERABLE ] && VULN=1
+    # pad before colouring so escape codes don't break the columns
+    printf '%-30s %-40s %-10s %s %s\n' "$name" "$img" "$state" "$(paint "$r" "$(printf '%-11s' "$r")")" "${HITS:+$RED$HITS$OFF}" >> "$tmp/out"
   done 3< "$tmp/ps"
 
   say ""
-  say "━━ summary"
-  printf '%-30s %-40s %-10s %-11s %s\n' NAME IMAGE STATE RESULT "TRUSTED BY"
+  say "${BLD}━━ summary${OFF}"
+  printf '%s%-30s %-40s %-10s %-11s %s%s\n' "$BLD" NAME IMAGE STATE RESULT "TRUSTED BY" "$OFF"
   cat "$tmp/out" 2>/dev/null
   say ""
   say "not checked : Python certifi bundles, Go binaries with embedded roots, Rust webpki-roots, app-specific"
   say "              truststores. A store that trusts the root only matters if something in that container"
   say "              makes outbound TLS with it."
-  if grep -q ' VULNERABLE ' "$tmp/out" 2>/dev/null; then
+  if [ "${VULN:-0}" = 1 ]; then
     echo
+    echo "${RED}Containers above trust the compromised root.${OFF}"
     echo "os-*: rebuild/pull, or mount the host's patched store (README: 'Mitigate without new images')."
     echo "jdk-cacerts: ./emudhra.sh java-truststore <container>. node-builtin: NODE_OPTIONS=--use-openssl-ca."
     exit 2
   fi
+  echo "${GRN}No container trusts the compromised root.${OFF}"
   ;;
 docker-fix)
   # containers are immutable: rebuild/pull + recreate. Pass compose dirs or compose files.
