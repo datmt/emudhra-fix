@@ -12,6 +12,16 @@ Updating the host does **not** fix running containers. Each image carries its ow
 
 ## Usage
 
+One-liner, no clone needed (read the script first, it runs `sudo` for `host` and `docker-fix`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/datmt/emudhra-fix/main/emudhra.sh | bash -s -- check
+curl -fsSL https://raw.githubusercontent.com/datmt/emudhra-fix/main/emudhra.sh | bash -s -- docker-check
+curl -fsSL https://raw.githubusercontent.com/datmt/emudhra-fix/main/emudhra.sh | bash -s -- host
+```
+
+Or from a clone:
+
 ```bash
 ./emudhra.sh check                       # canary test on this host
 ./emudhra.sh host                        # upgrade ca-certificates (pacman/apt/brew), re-check

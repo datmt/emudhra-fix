@@ -13,7 +13,7 @@ probe() { # args: command prefix (e.g. "docker exec <id>" or empty)
   else echo "UNKNOWN($(head -c 80 <<<"$out"))"; fi
 }
 
-case "${1:-}" in
+main() { case "${1:-}" in
 check)
   echo "host: $(probe)"
   ;;
@@ -23,7 +23,7 @@ host)
   elif command -v apt-get >/dev/null; then sudo apt-get update && sudo apt-get install -y --only-upgrade ca-certificates && sudo update-ca-certificates
   elif command -v brew >/dev/null;    then brew upgrade ca-certificates
   else echo "unknown pkg manager"; exit 1; fi
-  "$0" check
+  main check
   ;;
 docker-check)
   # no exec needed: copy each container's CA bundle out, verify canary chain against it on host
@@ -52,7 +52,9 @@ docker-fix)
       docker compose pull --ignore-buildable   # pull-only services
       docker compose up -d --force-recreate )
   done
-  "$0" docker-check
+  main docker-check
   ;;
-*) sed -n 2,3p "$0"; exit 1 ;;
+*) echo "usage: emudhra.sh check|host|docker-check|docker-fix <compose-dir...>"; exit 1 ;;
 esac
+}
+main "$@"
