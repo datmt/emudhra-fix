@@ -4,6 +4,8 @@ Check and fix hosts, Docker containers and Kubernetes pods that still trust the 
 
 > Based on the [oss-security disclosure](https://www.openwall.com/lists/oss-security/2026/10/20/1) and Debian's `ca-certificates 20250419+deb13u1` (blocklists emSign ECC Root CA - G3). The canary domain and other version numbers come from third-party reporting; confirm them against vendor or CA-store announcements before relying on them.
 
+> **Disclaimer:** Provided as is, without warranty. Not affiliated with eMudhra or any vendor. `check`, `docker-check`, `image-check`, `k8s-check` and `java-truststore` only read; `host` upgrades packages and `docker-fix` rebuilds and recreates containers. Read the script and try it on a non-production machine first, and take your own backups. You are responsible for what you run.
+
 ![docker-check flags running containers that still trust the root](docs/docker-check.png)
 
 After the fix, Java rejects a certificate chained to the root (canary domain):
