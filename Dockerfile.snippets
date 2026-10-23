@@ -1,0 +1,16 @@
+# Add near top of final stage, per base image:
+
+# Debian/Ubuntu
+RUN apt-get update && apt-get install -y --only-upgrade ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# Alpine
+RUN apk add --no-cache --upgrade ca-certificates
+
+# Python (requests uses certifi, not OS store)
+RUN pip install --no-cache-dir --upgrade "certifi>=2026.10.19"
+
+# Node: use OS store
+ENV NODE_OPTIONS=--use-openssl-ca
+
+# Go: rebuild with latest toolchain; static binaries on scratch need fresh certs copied:
+# COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
