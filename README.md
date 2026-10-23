@@ -28,7 +28,9 @@ curl -I https://dv-g3b-emudhra.we-have-a-problem.com/
 - `HTTP/1.1 200 OK` — **vulnerable**, the leaked key is still trusted.
 - TLS error (`unable to get local issuer certificate`, `certificate revoked`) — **safe**.
 
-`docker-check` prints `SAFE`, `VULNERABLE`, or `UNKNOWN`. `UNKNOWN` usually means the image has no `curl`; test it with its own runtime.
+`docker-check` needs no `curl` in the image. It fetches the canary's cert chain on the host, `docker cp`s each container's CA bundle (running or stopped), and runs `openssl verify` against it. Output is `SAFE`, `VULNERABLE` (bundle trusts the canary chain) or `NO-BUNDLE` (no bundle at a known path, e.g. distroless/scratch/Debian-slim without ca-certificates).
+
+Limits: checks the OS bundle only, not `certifi`, Node's built-in store or Go's embedded roots. If the upstream fix is a revocation/distrust of the intermediate rather than a root removal, a stale-looking bundle can't be told apart from a patched one by this test; treat the host `check` (real `curl`) as the reference.
 
 ## Can Docker be automated?
 

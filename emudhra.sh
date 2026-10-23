@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # eMudhra CA leak: check + fix host and docker.
 # usage: ./emudhra.sh check|host|docker-check|docker-fix [compose-dir...]
+# docker-check: OS CA bundle only; language bundles (certifi, node, go) need separate check
 set -uo pipefail
 CANARY=https://dv-g3b-emudhra.we-have-a-problem.com/
 
@@ -24,9 +25,20 @@ host)
   "$0" check
   ;;
 docker-check)
-  # curl missing in image => UNKNOWN; check those by hand / via language runtime
-  docker ps --format '{{.ID}} {{.Names}} {{.Image}}' | while read -r id name img; do
-    printf '%-30s %-40s %s\n' "$name" "$img" "$(probe docker exec "$id")"
+  # no exec needed: copy each container's CA bundle out, verify canary chain against it on host
+  tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+  h=${CANARY#https://}; h=${h%/}
+  openssl s_client -connect "$h:443" -servername "$h" -showcerts </dev/null 2>/dev/null \
+    | awk -v d="$tmp" '/BEGIN CERT/{n++; w=1} w{print > d "/c" n ".pem"} /END CERT/{w=0}'
+  cat "$tmp"/c*.pem > "$tmp/chain.pem" 2>/dev/null || { echo "canary chain fetch failed"; exit 1; }
+  docker ps -a --format '{{.ID}} {{.Names}} {{.Image}}' | while read -r id name img; do
+    rm -f "$tmp/b.crt"; r=NO-BUNDLE
+    for p in /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem /etc/pki/tls/certs/ca-bundle.crt; do
+      docker cp "$id:$p" "$tmp/b.crt" 2>/dev/null || continue
+      if openssl verify -CAfile "$tmp/b.crt" -untrusted "$tmp/chain.pem" "$tmp/c1.pem" >/dev/null 2>&1
+      then r=VULNERABLE; else r=SAFE; fi; break
+    done
+    printf '%-30s %-40s %s\n' "$name" "$img" "$r"
   done
   ;;
 docker-fix)
