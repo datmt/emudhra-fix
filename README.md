@@ -233,6 +233,7 @@ One-liners, no clone needed (read the script first; only `--fix` changes anythin
 
 ```bash
 B=https://raw.githubusercontent.com/datmt/emudhra-fix/main/brotli-cve-check.sh
+curl -fsSL $B | bash -s -- dir                      # dependency files under the current dir
 curl -fsSL $B | bash -s -- host                     # this machine
 curl -fsSL $B | bash -s -- ssh:user@server          # another machine over ssh
 curl -fsSL $B | bash -s -- -q all                   # containers + images, VULNERABLE rows only
@@ -244,6 +245,8 @@ curl -fsSL $B | SCAN_ROOT=/data bash -s -- host     # env vars go on bash, not c
 Or from a clone:
 
 ```bash
+./brotli-cve-check.sh dir                   # dependency files under the current dir (recursive)
+./brotli-cve-check.sh dir:~/code/app        # or under another directory
 ./brotli-cve-check.sh host                                                      # this machine (run as root to see everything)
 ./brotli-cve-check.sh ssh:user@server                                           # another machine over ssh, nothing installed there
 ./brotli-cve-check.sh --fix host                                                # also upgrade vulnerable pip venvs here (asks y/N; -y skips)
@@ -263,6 +266,19 @@ Each target gets a block with every finding, then a summary table sorted worst f
 `host` and `ssh:` run the same probe on a plain machine (Linux, macOS, BSD; needs only `sh` and `find`). Besides every Python venv, Node and jar on disk (skipping `/proc`, `/sys`, `/dev`, `/run`, `/mnt`, `/media` and container storage: `/var/lib/docker`, `containerd`, `containers`, `kubelet`, `rancher`; use `containers` / `images` for those), they check `curl -V` for the libbrotli it links and the installed `libbrotli*` package (dpkg, rpm, apk, pacman, brew). Distros often backport the fix without changing the version, so curl, packages and native libraries are `REVIEW` (vulnerable only if your distro hasn't patched; check its security tracker), while Python and Node versions are decisive. Over `ssh:` the probe is piped to `sh -s`; use your usual ssh keys or agent.
 
 `k8s` lists pod and init-container images with `kubectl`, pulls each unique image locally if it isn't already there (`docker login` first for a private registry; images that can't be pulled show `PULL-FAILED`, not checked), scans it, then prints a per-pod table. It checks what the image contains, not what a pod mounts or installs at start-up, and scans the local platform's variant of a multi-arch image.
+
+**`dir` (the practical fix).** An in-place upgrade is undone by the next `uv sync` or image build, so scan what your projects *would install*: `dir` walks the current directory (or `dir:<path>`; skips `node_modules`, `.git`, venvs, `.cache`) and reports one row per project directory. It reads, without installing anything:
+
+| File | Verdict |
+|---|---|
+| `uv.lock`, `poetry.lock`, `pdm.lock`, `Pipfile.lock` | exact locked `brotli` / `brotlicffi` version: `VULNERABLE` if in range |
+| `requirements*.txt`, `constraints*.txt` | `==` pin in range: `VULNERABLE`; floor below the fix, `<` caps, `~=`: `REVIEW`; unpinned or `>=` fixed: ok |
+| `pyproject.toml`, `Pipfile`, `environment*.yml` | same rules for the declared spec |
+| `.nvmrc`, `.node-version`, `.tool-versions`, `Dockerfile* FROM node:X.Y.Z` | Node below 22.23.4 / 24.22.1 / 26.12.1: `VULNERABLE`; floating tags like `24`: `REVIEW` |
+| `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `package.json` | `iltorb`, `brotli-wasm`, `brotli-dec-wasm`: `REVIEW` |
+| `pom.xml`, `build.gradle*`, `gradle.lockfile`, `libs.versions.toml` | `brotli4j`, `org.brotli`: `REVIEW` |
+
+The how-to-fix block then gives the project-level command: `uv lock --upgrade-package brotli && uv sync`, `poetry update brotli`, `pdm update brotli`, `pipenv update brotli`, or which line to edit in a requirements/pyproject file. It sees direct and locked dependencies only; a package that is only pulled in by something without a lock file is not visible, so pair it with `host` or `images`.
 
 **Fixes.** Whenever something is `VULNERABLE` the script ends with a "how to fix" block: the exact `<venv>/bin/python -m pip install -U 'brotli>=1.2.1'` per venv, `conda install -p <env>` for conda envs (not pip), `uv cache clean` for uv caches, rebuild instructions for containers and images, and the Node versions to move to. `--fix` applies only the host venv upgrades (`pip`, or `uv pip` for uv-created venvs that have no pip; a failure shows pip's last error line), after listing them and asking `[y/N]` (`-y` skips the question). It never touches conda envs, caches, Node, OS packages, containers or `ssh:` targets. Restart the services using an upgraded venv, then re-run the check.
 
