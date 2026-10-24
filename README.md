@@ -235,11 +235,15 @@ curl -fsSL https://raw.githubusercontent.com/datmt/emudhra-fix/main/brotli-cve-c
 ./brotli-cve-check.sh containers            # every running container
 ./brotli-cve-check.sh images                # every local image
 ./brotli-cve-check.sh all                   # both
+./brotli-cve-check.sh k8s                   # every image used by pods in the current kubectl context
+KCTX=prod K8S_NS=apps ./brotli-cve-check.sh k8s   # other context / one namespace
 ./brotli-cve-check.sh -q all                # summary table with only the VULNERABLE rows (cron)
 ./brotli-cve-check.sh my-api python:3.12    # specific containers or images
 ```
 
 Each target gets a block with every finding, then a summary table sorted worst first. Colour shows on a terminal; `NO_COLOR=1` turns it off. Exit code is 2 if anything is `VULNERABLE`, 0 otherwise. Fix: `brotli>=1.2.1`, `brotlicffi>=1.2.1.0`, a patched Node, then rebuild and recreate (updating the host doesn't change images).
+
+`k8s` lists pod and init-container images with `kubectl`, pulls each unique image locally if it isn't already there (`docker login` first for a private registry; images that can't be pulled show `PULL-FAILED`, not checked), scans it, then prints a per-pod table. It checks what the image contains, not what a pod mounts or installs at start-up, and scans the local platform's variant of a multi-arch image.
 
 Limits: it doesn't open jars nested inside fat jars, and doesn't see statically linked binaries or other mounts and volumes, so a clean result isn't proof. The Node fix versions come from the [Node.js October 2026 security release](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases); confirm them there. A stopped container can't be exec'd; scan its image instead.
 
