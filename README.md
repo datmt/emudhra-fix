@@ -229,9 +229,19 @@ See [`Dockerfile.snippets`](Dockerfile.snippets): `ca-certificates` upgrade for 
 | Node.js 22 / 24 / 26 below 22.23.4 / 24.22.1 / 26.12.1 (bundled decoder) | `VULNERABLE` |
 | Java jars named `*brotli*`, npm `iltorb` / `brotli-wasm`, native `libbrotlidec.so*` | `REVIEW` (check the vendor or distro advisory; backports keep old version numbers) |
 
+One-liners, no clone needed (read the script first; only `--fix` changes anything):
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/datmt/emudhra-fix/main/brotli-cve-check.sh | bash -s -- -q all
+B=https://raw.githubusercontent.com/datmt/emudhra-fix/main/brotli-cve-check.sh
+curl -fsSL $B | bash -s -- host                     # this machine
+curl -fsSL $B | bash -s -- ssh:user@server          # another machine over ssh
+curl -fsSL $B | bash -s -- -q all                   # containers + images, VULNERABLE rows only
+curl -fsSL $B | bash -s -- k8s                      # pods in the current kubectl context
+curl -fsSL $B | bash -s -- --fix host               # also upgrade vulnerable pip venvs (asks y/N)
+curl -fsSL $B | SCAN_ROOT=/data bash -s -- host     # env vars go on bash, not curl
 ```
+
+Or from a clone:
 
 ```bash
 ./brotli-cve-check.sh host                                                      # this machine (run as root to see everything)
