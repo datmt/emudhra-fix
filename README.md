@@ -1,5 +1,7 @@
 # emudhra-fix
 
+> Also in this repo: [`brotli-cve-check.sh`](#brotli-cve-check-ghsa-9v8h-qqgm-4m35--cve-2026-111497), a scanner for the Brotli decoder CVE-2026-111497 on hosts, containers, images and Kubernetes.
+
 Check and fix hosts, Docker containers and Kubernetes pods that still trust the leaked eMudhra intermediate CA keys.
 
 > Based on the [oss-security disclosure](https://www.openwall.com/lists/oss-security/2026/10/20/1) and Debian's `ca-certificates 20250419+deb13u1` (blocklists emSign ECC Root CA - G3). The canary domain and other version numbers come from third-party reporting; confirm them against vendor or CA-store announcements before relying on them.
@@ -232,21 +234,21 @@ curl -fsSL https://raw.githubusercontent.com/datmt/emudhra-fix/main/brotli-cve-c
 ```
 
 ```bash
-./brotli-cve-check.sh host                  # this machine (run as root to see everything)
-./brotli-cve-check.sh ssh:user@server         # another machine over ssh, nothing installed there
-./brotli-cve-check.sh --fix host            # also upgrade vulnerable pip venvs on this machine (asks y/N; -y skips)
-SCAN_ROOT=/data ./brotli-cve-check.sh host   # limit the file search to one directory
-./brotli-cve-check.sh containers            # every running container
-./brotli-cve-check.sh images                # every local image
-./brotli-cve-check.sh all                   # both
-./brotli-cve-check.sh k8s                   # every image used by pods in the current kubectl context
-KCTX=prod K8S_NS=apps ./brotli-cve-check.sh k8s   # other context / one namespace
-KUBECTL='docker exec k3d-mycluster-server-0 kubectl' ./brotli-cve-check.sh k8s   # k3d/k3s: kubectl only inside the node container
-./brotli-cve-check.sh -q all                # summary table with only the VULNERABLE rows (cron)
-./brotli-cve-check.sh my-api python:3.12    # specific containers or images
+./brotli-cve-check.sh host                                                      # this machine (run as root to see everything)
+./brotli-cve-check.sh ssh:user@server                                           # another machine over ssh, nothing installed there
+./brotli-cve-check.sh --fix host                                                # also upgrade vulnerable pip venvs here (asks y/N; -y skips)
+SCAN_ROOT=/data ./brotli-cve-check.sh host                                      # limit the file search to one directory
+./brotli-cve-check.sh containers                                                # every running container
+./brotli-cve-check.sh images                                                    # every local image
+./brotli-cve-check.sh all                                                       # containers and images
+./brotli-cve-check.sh k8s                                                       # every image used by pods in the current kubectl context
+KCTX=prod K8S_NS=apps ./brotli-cve-check.sh k8s                                 # other context / one namespace
+KUBECTL='docker exec k3d-mycluster-server-0 kubectl' ./brotli-cve-check.sh k8s  # k3d/k3s: kubectl only inside the node container
+./brotli-cve-check.sh -q all                                                    # summary table with only the VULNERABLE rows (cron)
+./brotli-cve-check.sh my-api python:3.12                                        # specific containers or images
 ```
 
-Each target gets a block with every finding, then a summary table sorted worst first. Colour shows on a terminal; `NO_COLOR=1` turns it off. Exit code is 2 if anything is `VULNERABLE`, 0 otherwise. Fix: `brotli>=1.2.1`, `brotlicffi>=1.2.1.0`, a patched Node, then rebuild and recreate (updating the host doesn't change images).
+Each target gets a block with every finding, then a summary table sorted worst first. Colour shows on a terminal; `NO_COLOR=1` turns it off. Exit code is 2 if anything is `VULNERABLE`, 0 otherwise.
 
 `host` and `ssh:` run the same probe on a plain machine (Linux, macOS, BSD; needs only `sh` and `find`). Besides every Python venv, Node and jar on disk (skipping `/proc`, `/sys`, `/dev`, `/run`, `/mnt`, `/media`), they check `curl -V` for the libbrotli it links and the installed `libbrotli*` package (dpkg, rpm, apk, pacman, brew). Distros often backport the fix without changing the version, so curl, packages and native libraries are `REVIEW` (vulnerable only if your distro hasn't patched; check its security tracker), while Python and Node versions are decisive. Over `ssh:` the probe is piped to `sh -s`; use your usual ssh keys or agent.
 
@@ -254,7 +256,7 @@ Each target gets a block with every finding, then a summary table sorted worst f
 
 **Fixes.** Whenever something is `VULNERABLE` the script ends with a "how to fix" block: the exact `<venv>/bin/python -m pip install -U 'brotli>=1.2.1'` per venv, `conda install -p <env>` for conda envs (not pip), `uv cache clean` for uv caches, rebuild instructions for containers and images, and the Node versions to move to. `--fix` applies only the host pip venv upgrades, after listing them and asking `[y/N]` (`-y` skips the question). It never touches conda envs, caches, Node, OS packages, containers or `ssh:` targets. Restart the services using an upgraded venv, then re-run the check.
 
-Limits: it doesn't open jars nested inside fat jars, and doesn't see statically linked binaries or other mounts and volumes, so a clean result isn't proof. The Node fix versions come from the [Node.js October 2026 security release](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases); confirm them there. A stopped container can't be exec'd; scan its image instead.
+Limits: it doesn't open jars nested inside fat jars, and doesn't see statically linked binaries. Container and image scans stay inside the container's own filesystem (not mounted volumes), and a host scan skips network mounts under `/mnt` and `/media`, so a clean result isn't proof. The Node fix versions come from the [Node.js October 2026 security release](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases); confirm them there. A stopped container can't be exec'd; scan its image instead.
 
 ## Files
 
