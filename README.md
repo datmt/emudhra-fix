@@ -237,6 +237,7 @@ curl -fsSL https://raw.githubusercontent.com/datmt/emudhra-fix/main/brotli-cve-c
 ./brotli-cve-check.sh all                   # both
 ./brotli-cve-check.sh k8s                   # every image used by pods in the current kubectl context
 KCTX=prod K8S_NS=apps ./brotli-cve-check.sh k8s   # other context / one namespace
+KUBECTL='docker exec k3d-mycluster-server-0 kubectl' ./brotli-cve-check.sh k8s   # k3d/k3s: kubectl only inside the node container
 ./brotli-cve-check.sh -q all                # summary table with only the VULNERABLE rows (cron)
 ./brotli-cve-check.sh my-api python:3.12    # specific containers or images
 ```
