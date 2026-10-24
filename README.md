@@ -217,7 +217,34 @@ This also covers Java, so `java-truststore` isn't needed. The root stays listed 
 
 See [`Dockerfile.snippets`](Dockerfile.snippets): `ca-certificates` upgrade for Debian/Ubuntu and Alpine, `certifi>=2026.10.19` for Python, `--use-openssl-ca` for Node, JDK truststore cleanup for Java (`keytool -delete` loop, matches aliases `emsign`/`aaa_certificate_services`; for distroless, clean a copy in a JDK build stage and `COPY` it over `/etc/ssl/certs/java/cacerts`), current toolchain for Go.
 
+## Brotli CVE check (GHSA-9v8h-qqgm-4m35 / CVE-2026-111497)
+
+[`brotli-cve-check.sh`](brotli-cve-check.sh) looks for the Brotli decoder out-of-bounds write ("Node2Shell") in running containers and local images. It only reads: each target is probed with a short `sh` script (`docker exec` for containers, a throwaway `docker run --network none --cap-drop ALL` for images).
+
+| Finds | Status |
+|---|---|
+| PyPI `brotli` >= 1.0.3, < 1.2.1 / `brotlicffi` >= 1.0.3, < 1.2.1.0 (any venv, found by `*.dist-info`) | `VULNERABLE` |
+| Node.js 22 / 24 / 26 below 22.23.4 / 24.22.1 / 26.12.1 (bundled decoder) | `VULNERABLE` |
+| Java jars named `*brotli*`, npm `iltorb` / `brotli-wasm`, native `libbrotlidec.so*` | `REVIEW` (check the vendor or distro advisory; backports keep old version numbers) |
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/datmt/emudhra-fix/main/brotli-cve-check.sh | bash -s -- -q all
+```
+
+```bash
+./brotli-cve-check.sh containers            # every running container
+./brotli-cve-check.sh images                # every local image
+./brotli-cve-check.sh all                   # both
+./brotli-cve-check.sh -q all                # only VULNERABLE targets (cron)
+./brotli-cve-check.sh my-api python:3.12    # specific containers or images
+```
+
+Exit code is 2 if anything is `VULNERABLE`, 0 otherwise. Fix: `brotli>=1.2.1`, `brotlicffi>=1.2.1.0`, a patched Node, then rebuild and recreate (updating the host doesn't change images).
+
+Limits: it doesn't open jars nested inside fat jars, and doesn't see statically linked binaries or other mounts and volumes, so a clean result isn't proof. The Node fix versions come from the [Node.js October 2026 security release](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases); confirm them there. A stopped container can't be exec'd; scan its image instead.
+
 ## Files
 
 - `emudhra.sh` — check/fix script (host, Docker, images, Kubernetes)
 - `Dockerfile.snippets` — per-base-image fixes
+- `brotli-cve-check.sh` — Brotli CVE-2026-111497 scanner for containers and images (Python, Node, Java)
