@@ -234,6 +234,8 @@ curl -fsSL https://raw.githubusercontent.com/datmt/emudhra-fix/main/brotli-cve-c
 ```bash
 ./brotli-cve-check.sh host                  # this machine (run as root to see everything)
 ./brotli-cve-check.sh ssh:user@server         # another machine over ssh, nothing installed there
+./brotli-cve-check.sh --fix host            # also upgrade vulnerable pip venvs on this machine (asks y/N; -y skips)
+SCAN_ROOT=/data ./brotli-cve-check.sh host   # limit the file search to one directory
 ./brotli-cve-check.sh containers            # every running container
 ./brotli-cve-check.sh images                # every local image
 ./brotli-cve-check.sh all                   # both
@@ -249,6 +251,8 @@ Each target gets a block with every finding, then a summary table sorted worst f
 `host` and `ssh:` run the same probe on a plain machine (Linux, macOS, BSD; needs only `sh` and `find`). Besides every Python venv, Node and jar on disk (skipping `/proc`, `/sys`, `/dev`, `/run`, `/mnt`, `/media`), they check `curl -V` for the libbrotli it links and the installed `libbrotli*` package (dpkg, rpm, apk, pacman, brew). Distros often backport the fix without changing the version, so curl, packages and native libraries are `REVIEW` (vulnerable only if your distro hasn't patched; check its security tracker), while Python and Node versions are decisive. Over `ssh:` the probe is piped to `sh -s`; use your usual ssh keys or agent.
 
 `k8s` lists pod and init-container images with `kubectl`, pulls each unique image locally if it isn't already there (`docker login` first for a private registry; images that can't be pulled show `PULL-FAILED`, not checked), scans it, then prints a per-pod table. It checks what the image contains, not what a pod mounts or installs at start-up, and scans the local platform's variant of a multi-arch image.
+
+**Fixes.** Whenever something is `VULNERABLE` the script ends with a "how to fix" block: the exact `<venv>/bin/python -m pip install -U 'brotli>=1.2.1'` per venv, `conda install -p <env>` for conda envs (not pip), `uv cache clean` for uv caches, rebuild instructions for containers and images, and the Node versions to move to. `--fix` applies only the host pip venv upgrades, after listing them and asking `[y/N]` (`-y` skips the question). It never touches conda envs, caches, Node, OS packages, containers or `ssh:` targets. Restart the services using an upgraded venv, then re-run the check.
 
 Limits: it doesn't open jars nested inside fat jars, and doesn't see statically linked binaries or other mounts and volumes, so a clean result isn't proof. The Node fix versions come from the [Node.js October 2026 security release](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases); confirm them there. A stopped container can't be exec'd; scan its image instead.
 
