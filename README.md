@@ -219,7 +219,7 @@ See [`Dockerfile.snippets`](Dockerfile.snippets): `ca-certificates` upgrade for 
 
 ## Brotli CVE check (GHSA-9v8h-qqgm-4m35 / CVE-2026-111497)
 
-[`brotli-cve-check.sh`](brotli-cve-check.sh) looks for the Brotli decoder out-of-bounds write ("Node2Shell") in running containers and local images. It only reads: each target is probed with a short `sh` script (`docker exec` for containers, a throwaway `docker run --network none --cap-drop ALL` for images).
+[`brotli-cve-check.sh`](brotli-cve-check.sh) looks for the Brotli decoder out-of-bounds write ("Node2Shell") on hosts, in running containers, local images and Kubernetes pods. It only reads: each target is probed with a short `sh` script (run locally, over `ssh`, via `docker exec`, or in a throwaway `docker run --network none --cap-drop ALL` for images).
 
 | Finds | Status |
 |---|---|
@@ -232,6 +232,8 @@ curl -fsSL https://raw.githubusercontent.com/datmt/emudhra-fix/main/brotli-cve-c
 ```
 
 ```bash
+./brotli-cve-check.sh host                  # this machine (run as root to see everything)
+./brotli-cve-check.sh ssh:user@server         # another machine over ssh, nothing installed there
 ./brotli-cve-check.sh containers            # every running container
 ./brotli-cve-check.sh images                # every local image
 ./brotli-cve-check.sh all                   # both
@@ -243,6 +245,8 @@ KUBECTL='docker exec k3d-mycluster-server-0 kubectl' ./brotli-cve-check.sh k8s  
 ```
 
 Each target gets a block with every finding, then a summary table sorted worst first. Colour shows on a terminal; `NO_COLOR=1` turns it off. Exit code is 2 if anything is `VULNERABLE`, 0 otherwise. Fix: `brotli>=1.2.1`, `brotlicffi>=1.2.1.0`, a patched Node, then rebuild and recreate (updating the host doesn't change images).
+
+`host` and `ssh:` run the same probe on a plain machine (Linux, macOS, BSD; needs only `sh` and `find`). Besides every Python venv, Node and jar on disk (skipping `/proc`, `/sys`, `/dev`, `/run`, `/mnt`, `/media`), they check `curl -V` for the libbrotli it links and the installed `libbrotli*` package (dpkg, rpm, apk, pacman, brew). Distros often backport the fix without changing the version, so curl, packages and native libraries are `REVIEW` (vulnerable only if your distro hasn't patched; check its security tracker), while Python and Node versions are decisive. Over `ssh:` the probe is piped to `sh -s`; use your usual ssh keys or agent.
 
 `k8s` lists pod and init-container images with `kubectl`, pulls each unique image locally if it isn't already there (`docker login` first for a private registry; images that can't be pulled show `PULL-FAILED`, not checked), scans it, then prints a per-pod table. It checks what the image contains, not what a pod mounts or installs at start-up, and scans the local platform's variant of a multi-arch image.
 
